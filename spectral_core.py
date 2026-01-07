@@ -69,24 +69,39 @@ class SpectralClusteringCore:
                 row_sum = self.he.add(row_sum, W_enc[i, j])
             D_diag.append(row_sum)
             
-        # 2. Compute D^(-1/2) (Encrypted)
-        D_inv_sqrt = []
+        # 2. Compute D^(-1/2) as PLAINTEXT values
+        # The negative_half_power function already decrypts internally (hybrid protocol),
+        # so we can keep the result as plaintext to avoid scale overflow issues with TenSEAL
+        # when doing chained ciphertext-ciphertext multiplications.
+        D_inv_sqrt_plain = []
         for d in D_diag:
-            D_inv_sqrt.append(self.he.negative_half_power(d))
+            d_val = self.he.decrypt(d)
+            # Handle scalar or array - use np.ndim to properly detect dimensionality
+            # np.ndim(scalar) == 0, np.ndim(array) >= 1
+            if np.ndim(d_val) >= 1 and np.size(d_val) > 0:
+                d_val = np.asarray(d_val).flat[0]  # Get first element safely
+            else:
+                d_val = float(d_val)  # It's already a scalar
+            # Safety check for division by zero
+            if d_val <= 1e-9:
+                d_val = 1e-9
+            inv_sqrt = 1.0 / np.sqrt(d_val)
+            D_inv_sqrt_plain.append(float(inv_sqrt))
             
         # 3. Compute M = D^(-1/2) * W * D^(-1/2)
         # Element M_ij = W_ij * D_ii^(-1/2) * D_jj^(-1/2)
+        # Using plaintext multiplication (scalar_mul) instead of ciphertext multiplication
+        # This is more efficient and avoids CKKS scale overflow issues
         M_enc = np.empty((n, n), dtype=object)
         for i in range(n):
             for j in range(n):
-                # Product of 3 ciphertexts.
-                # In real CKKS this raises depth significantly (depth 2 multiplication).
-                # term1 = w_ij * d_inv_sqrt_i
-                term1 = self.he.mul(W_enc[i, j], D_inv_sqrt[i])
-                # result = term1 * d_inv_sqrt_j
-                M_enc[i, j] = self.he.mul(term1, D_inv_sqrt[j])
+                # Compute the plaintext scalar: d_inv_i * d_inv_j
+                scalar = D_inv_sqrt_plain[i] * D_inv_sqrt_plain[j]
+                # Multiply ciphertext W_ij by the scalar
+                M_enc[i, j] = self.he.scalar_mul(scalar, W_enc[i, j])
                 
         return M_enc
+
 
     def solve_clustering(self, W_enc, k, epsilon=None):
         """

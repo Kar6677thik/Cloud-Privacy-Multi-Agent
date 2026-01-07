@@ -155,14 +155,22 @@ class TenSEALContext(HEContext):
         
     def keygen(self):
         # Create TenSEAL context
-        # Poly moduli degree 8192 is standard for decent security/depth
-        # Coeff modulus bit sizes: [60, 40, 40, 60] allows for some depth
+        # Poly moduli degree 16384 for more security and depth capacity
+        # Coeff modulus bit sizes: More primes allow for more multiplicative depth
+        # The spectral clustering algorithm requires multiple chained multiplications
+        # (W * D_inv_sqrt[i] * D_inv_sqrt[j]), so we need sufficient depth
         self.ctx = self.ts.context(
             self.ts.SCHEME_TYPE.CKKS,
-            poly_modulus_degree=8192,
-            coeff_mod_bit_sizes=[60, 40, 40, 60]
+            poly_modulus_degree=16384,
+            coeff_mod_bit_sizes=[60, 40, 40, 40, 40, 40, 60]  # 5 levels of mult depth
         )
         self.ctx.global_scale = 2**40
+        
+        # Enable automatic rescaling and relinearization after multiplications
+        # This is CRITICAL to prevent "scale out of bounds" errors
+        self.ctx.auto_rescale = True
+        self.ctx.auto_relin = True
+        
         self.ctx.generate_galois_keys()
         self.ctx.generate_relin_keys()
         
