@@ -88,22 +88,24 @@ class SpectralClusteringCore:
                 
         return M_enc
 
-    def solve_clustering(self, W_enc, k):
+    def solve_clustering(self, W_enc, k, epsilon=None):
         """
         The full pipeline from Encrypted Affinity Matrix W_enc.
         
         1. Compute L (Encrypted)
         2. Decrypt L (Simulated "Client/Server" cooperation or final step)
         3. Eigendecomposition
-        4. K-Means
+        4. Differential Privacy Noise Addition (Optional)
+        5. K-Means
         
         Args:
             W_enc: Encrypted W
             k: number of clusters
+            epsilon: Privacy Budget (None or float). If set, adds Laplace noise.
             
         Returns:
             labels: Cluster labels
-            Y: Spectral embedding
+            Y: Spectral embedding (potentially noisy)
             W_plain: Decrypted W (for vis)
             L_plain: Decrypted L (for vis)
         """
@@ -141,7 +143,20 @@ class SpectralClusteringCore:
         rows_norm[rows_norm == 0] = 1
         Y_norm = Y / rows_norm
         
-        # 4. K-Means
+        # 4. Differential Privacy Layer (Laplace Mechanism)
+        if epsilon is not None and epsilon > 0:
+            # Sensitivity Analysis (Simplified):
+            # Eigenvectors lie on the unit hyper-sphere (row norm 1).
+            # A rough sensitivity upper bound could be modeled.
+            # For prototype demonstration: scale = 0.1 / epsilon ensures obvious trade-off.
+            # Epsilon = 0.1 -> Scale = 1.0 (High noise)
+            # Epsilon = 10.0 -> Scale = 0.01 (Low noise)
+            scale = 0.5 / epsilon 
+            noise = np.random.laplace(0, scale, Y_norm.shape)
+            Y_norm = Y_norm + noise
+            # Re-normalize might be needed or preferred by K-Means, but raw noisy data is also fine to show displacement.
+            
+        # 5. K-Means
         kmeans = KMeans(n_clusters=k, random_state=42)
         labels = kmeans.fit_predict(Y_norm)
         

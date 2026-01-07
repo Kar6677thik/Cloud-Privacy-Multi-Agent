@@ -1,11 +1,11 @@
 import numpy as np
-from he_layer import HEContext
+from he_layer import get_he_context
 from spectral_core import SpectralClusteringCore
 
 class KGC:
     """Key Generation Center"""
-    def __init__(self):
-        self.he = HEContext()
+    def __init__(self, he_type="mock"):
+        self.he = get_he_context(he_type)
 
     def initialize_system(self):
         pk, sk = self.he.keygen()
@@ -30,19 +30,6 @@ class DataOwner:
         encrypted_rows = []
         for row in self.data:
             # Encrypt each row vector
-            # In a real system, we might encrypt feature-wise or packed.
-            # Here we wrap the whole vector in one "Ciphertext" if our operations support vectors,
-            # OR list of Ciphertexts.
-            # Our he_layer.Ciphertext wraps numpy arrays, so we can wrap the whole row vector.
-            # This is efficient for vector operations if supported.
-            # spectral_core expects gaussian_kernel to work on these.
-            # existing gaussian_kernel takes ct_a, ct_b.
-            # he_layer.l2_norm_sq computes ||a-b||^2.
-            # If a and b are vector Ciphertexts (wrapping arrays), 
-            # sub(a, b) -> Ciphertext(diff_vector)
-            # data**2 -> square of elements
-            # sum -> scalar sum.
-            # YES, he_layer supports vector wrapping.
             encrypted_rows.append(he_context.encrypt(row))
         return encrypted_rows
 
@@ -74,7 +61,7 @@ class CiphertextServer:
         for ds in encrypted_datasets:
             self.encrypted_pool.extend(ds)
             
-    def compute_clustering(self, k, sigma):
+    def compute_clustering(self, k, sigma, epsilon=None):
         """
         Executes the spectral clustering protocol.
         """
@@ -83,10 +70,10 @@ class CiphertextServer:
             
         # Compute Affinity Matrix first
         W_enc = self.spectral.compute_encrypted_affinity_matrix(self.encrypted_pool, sigma)
-        return self.spectral.solve_clustering(W_enc, k)
+        return self.spectral.solve_clustering(W_enc, k, epsilon=epsilon)
 
 
-def simulate_multi_user_system(data_owners_data, k, sigma):
+def simulate_multi_user_system(data_owners_data, k, sigma, he_type="mock", epsilon=None):
     """
     Simulates the full flow.
     
@@ -95,12 +82,16 @@ def simulate_multi_user_system(data_owners_data, k, sigma):
                           Example: {"User1": np.array(...), "User2": ...}
         k: Number of clusters
         sigma: Kernel sigma
+        he_type: "mock" or "tenseal"
+        epsilon: Differential Privacy Budget (float or None)
         
     Returns:
-        results: Dictionary containing labels, embedding, W, L
+        results: Dictionary containing labels, embedding, W, L, metrics
     """
+    from metrics import calculate_metrics # Local import to avoid circular dependency if any
+    
     # 1. Setup Phase (KGC)
-    kgc = KGC()
+    kgc = KGC(he_type=he_type)
     he, pk, sk = kgc.initialize_system()
     
     # 2. Data Upload Phase (Data Owners)
@@ -125,6 +116,7 @@ def simulate_multi_user_system(data_owners_data, k, sigma):
         encrypted_payloads.append(enc_data)
         
         n = len(data)
+        # Map user ID to integer for ARI calculation if needed, or keep string
         ground_truth_owners.extend([uid] * n)
         total_samples += n
         
@@ -132,12 +124,21 @@ def simulate_multi_user_system(data_owners_data, k, sigma):
     cs1.collect_data(encrypted_payloads)
     
     # 4. Computation (CS1 + CS2 interaction simulated)
-    labels, Y, W, L = cs1.compute_clustering(k, sigma)
+    labels, Y, W, L = cs1.compute_clustering(k, sigma, epsilon=epsilon)
+    
+    # Calculate Quality Metrics
+    # Need full data X? We have Y (embedding) and raw data (aggregated_data not easily available here without concat)
+    # Ideally metrics like Silhouette use the Embedding Y since that's what was clustered,
+    # OR the original space. Spectral Clustering optimizes the Embedding, so evaluating Y is fair.
+    # Evaluating original X evaluates if Spectral Clustering preserved original structure.
+    
+    metrics = calculate_metrics(Y, labels, true_labels=ground_truth_owners)
     
     return {
         "labels": labels,
         "Y": Y,
         "W": W,
         "L": L,
-        "owner_labels": ground_truth_owners
+        "owner_labels": ground_truth_owners,
+        "metrics": metrics
     }

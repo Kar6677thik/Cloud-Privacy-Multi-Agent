@@ -3,25 +3,51 @@ import copy
 
 class Ciphertext:
     """
-    A mock ciphertext wrapper.
-    In a real system, this would hold encrypted polynomial coefficients (CKKS).
-    Here, it wraps a NumPy array or scalar and adds 'noise' metadata
-    to simulate the HE experience.
+    A wrapper class for encrypted data.
+    It can hold either a Mock ciphertext (numpy array with metadata)
+    or a Real ciphertext (TenSEAL object).
     """
-    def __init__(self, data, is_encrypted=True):
-        self.data = np.array(data)
+    def __init__(self, data, is_encrypted=True, backend="mock"):
+        self.backend = backend
         self.is_encrypted = is_encrypted
-        self.noise_budget = 100.0 if is_encrypted else float('inf')
+        
+        if backend == "mock":
+            self.data = np.array(data)
+            self.noise_budget = 100.0 if is_encrypted else float('inf')
+        elif backend == "tenseal":
+            # For TenSEAL, 'data' should already be a CKKSVector or similar object
+            self.data = data 
+            self.noise_budget = None # Managed internally by TenSEAL
 
     def __repr__(self):
-        shape_str = str(self.data.shape)
-        return f"<Ciphertext shape={shape_str}, encrypted={self.is_encrypted}>"
+        if self.backend == "mock":
+            shape_str = str(self.data.shape)
+            return f"<Ciphertext(Mock) shape={shape_str}, encrypted={self.is_encrypted}>"
+        else:
+            return f"<Ciphertext(TenSEAL) encrypted={self.is_encrypted}>"
 
 
 class HEContext:
     """
+    Abstract Base Class / Interface for HE Contexts.
+    """
+    def keygen(self): raise NotImplementedError
+    def encrypt(self, x): raise NotImplementedError
+    def decrypt(self, ct): raise NotImplementedError
+    def add(self, ct1, ct2): raise NotImplementedError
+    def sub(self, ct1, ct2): raise NotImplementedError
+    def mul(self, ct1, ct2): raise NotImplementedError
+    def scalar_mul(self, a, ct): raise NotImplementedError
+    def l2_norm_sq(self, ct_a, ct_b): raise NotImplementedError
+    def gaussian_kernel(self, ct_a, ct_b, sigma): raise NotImplementedError
+    def negative_half_power(self, ct): raise NotImplementedError
+    def exp(self, ct): raise NotImplementedError
+
+
+class MockHEContext(HEContext):
+    """
     Mock HE Context to manage keys and operations.
-    Simulates CKKS operations.
+    Simulates CKKS operations using NumPy.
     """
     def __init__(self):
         self.public_key = None
@@ -37,39 +63,42 @@ class HEContext:
 
     def encrypt(self, x):
         """Encrypts data (wraps it in Ciphertext)."""
-        return Ciphertext(x, is_encrypted=True)
+        return Ciphertext(x, is_encrypted=True, backend="mock")
 
     def decrypt(self, ct: Ciphertext):
         """Decrypts data (unwraps it). Checks secret key in real life."""
         if not isinstance(ct, Ciphertext):
-            raise ValueError("Input must be a Ciphertext")
-        # In a real system, we'd check if we have the secret key here
+             # Ensure we handle recursive decryption if needed or raw values
+             return ct 
+        if ct.backend != "mock":
+            raise ValueError("MockHEContext cannot decrypt non-mock ciphertexts")
+            
         return ct.data
 
     def add(self, ct1, ct2):
         """Homomorphic addition."""
         val1 = ct1.data if isinstance(ct1, Ciphertext) else ct1
         val2 = ct2.data if isinstance(ct2, Ciphertext) else ct2
-        return Ciphertext(val1 + val2)
+        return Ciphertext(val1 + val2, backend="mock")
 
     def sub(self, ct1, ct2):
         """Homomorphic subtraction."""
         val1 = ct1.data if isinstance(ct1, Ciphertext) else ct1
         val2 = ct2.data if isinstance(ct2, Ciphertext) else ct2
-        return Ciphertext(val1 - val2)
+        return Ciphertext(val1 - val2, backend="mock")
 
     def mul(self, ct1, ct2):
         """Homomorphic multiplication."""
         val1 = ct1.data if isinstance(ct1, Ciphertext) else ct1
         val2 = ct2.data if isinstance(ct2, Ciphertext) else ct2
-        return Ciphertext(val1 * val2)
+        return Ciphertext(val1 * val2, backend="mock")
 
     def scalar_mul(self, a, ct):
         """Multiplication by plain scalar."""
         if isinstance(ct, Ciphertext):
-            return Ciphertext(a * ct.data)
+            return Ciphertext(a * ct.data, backend="mock")
         else:
-            return Ciphertext(a * ct)
+            return Ciphertext(a * ct, backend="mock")
 
     def l2_norm_sq(self, ct_a, ct_b):
         """
@@ -77,31 +106,23 @@ class HEContext:
         Result is a Ciphertext scalar.
         """
         diff = self.sub(ct_a, ct_b)
-        # Sum of squares of elements
-        # In CKKS, this is a sequence of mul and add (relinearization needed usually)
         squared_diff = diff.data ** 2
         sum_sq = np.sum(squared_diff)
-        return Ciphertext(sum_sq)
+        return Ciphertext(sum_sq, backend="mock")
 
     def gaussian_kernel(self, ct_a, ct_b, sigma):
         """
         Computes exp(-||a - b||^2 / (2 * sigma^2)).
-        Note: True HE exponentiation is hard. We simulate it here
-        or assume a polynomial approximation exists.
-        For this prototype, we compute it directly on underlying data
-        to keep the 'spectral' part working robustly.
         """
         norm_sq = self.decrypt(self.l2_norm_sq(ct_a, ct_b))
         val = np.exp(-norm_sq / (2 * sigma**2))
-        return Ciphertext(val)
+        return Ciphertext(val, backend="mock")
         
     def negative_half_power(self, ct):
         """
         Computes x^(-1/2). Used for D^(-1/2).
         """
-        # decrypt to compute inverse sqrt
         val = self.decrypt(ct)
-        # Handle division by zero or negative gracefully for prototype
         with np.errstate(divide='ignore'):
              res = 1.0 / np.sqrt(val)
         
@@ -111,9 +132,125 @@ class HEContext:
         else:
             res[np.isinf(res)] = 0
             
-        return Ciphertext(res)
+        return Ciphertext(res, backend="mock")
 
     def exp(self, ct):
         """Homomorphic exponential (simulated)."""
         val = self.decrypt(ct)
-        return Ciphertext(np.exp(val))
+        return Ciphertext(np.exp(val), backend="mock")
+
+
+class TenSEALContext(HEContext):
+    """
+    Real HE Context using TenSEAL (CKKS).
+    """
+    def __init__(self):
+        try:
+            import tenseal as ts
+            self.ts = ts
+        except ImportError:
+            raise ImportError("TenSEAL is not installed. Please pip install tenseal.")
+            
+        self.ctx = None
+        
+    def keygen(self):
+        # Create TenSEAL context
+        # Poly moduli degree 8192 is standard for decent security/depth
+        # Coeff modulus bit sizes: [60, 40, 40, 60] allows for some depth
+        self.ctx = self.ts.context(
+            self.ts.SCHEME_TYPE.CKKS,
+            poly_modulus_degree=8192,
+            coeff_mod_bit_sizes=[60, 40, 40, 60]
+        )
+        self.ctx.global_scale = 2**40
+        self.ctx.generate_galois_keys()
+        self.ctx.generate_relin_keys()
+        
+        return self.ctx, self.ctx # Public and Secret context are same object in TenSEAL usually for simple use
+
+    def encrypt(self, x):
+        # x is expected to be a list or numpy array
+        if isinstance(x, np.ndarray):
+            x = x.flatten().tolist()
+        if not isinstance(x, list):
+             x = [x]
+        
+        encrypted_vec = self.ts.ckks_vector(self.ctx, x)
+        return Ciphertext(encrypted_vec, backend="tenseal")
+
+    def decrypt(self, ct: Ciphertext):
+        if ct.backend != "tenseal":
+            raise ValueError("TenSEALContext cannot decrypt non-tenseal ciphertexts")
+        
+        decrypted_list = ct.data.decrypt()
+        # Return as numpy array for consistency
+        # If it was a scalar, it comes back as a list [val]
+        if len(decrypted_list) == 1:
+            return decrypted_list[0]
+        return np.array(decrypted_list)
+
+    def add(self, ct1, ct2):
+        # Handle scalar addition if needed, or CT+CT
+        val1 = ct1.data if isinstance(ct1, Ciphertext) else ct1
+        val2 = ct2.data if isinstance(ct2, Ciphertext) else ct2
+        
+        # TenSEAL supports python operators
+        return Ciphertext(val1 + val2, backend="tenseal")
+        
+    def sub(self, ct1, ct2):
+        val1 = ct1.data if isinstance(ct1, Ciphertext) else ct1
+        val2 = ct2.data if isinstance(ct2, Ciphertext) else ct2
+        return Ciphertext(val1 - val2, backend="tenseal")
+
+    def mul(self, ct1, ct2):
+        val1 = ct1.data if isinstance(ct1, Ciphertext) else ct1
+        val2 = ct2.data if isinstance(ct2, Ciphertext) else ct2
+        return Ciphertext(val1 * val2, backend="tenseal")
+        
+    def scalar_mul(self, a, ct):
+        return Ciphertext(ct.data * a, backend="tenseal")
+
+    def l2_norm_sq(self, ct_a, ct_b):
+        # ||x - y||^2 = sum((x-y)^2)
+        # CKKS vector subtraction is coordinate-wise
+        diff = self.sub(ct_a, ct_b)
+        # Square
+        squared_diff = diff.data ** 2 # Native TenSEAL squaring
+        # Sum elements. TenSEAL vectors have a .sum() method? 
+        # Actually .sum() might need rotation keys (Galois keys). We generated them.
+        sum_val = squared_diff.sum()
+        return Ciphertext(sum_val, backend="tenseal")
+
+    def gaussian_kernel(self, ct_a, ct_b, sigma):
+        # This is hard in pure HE. We will use the hybrid approach:
+        # Decrypt squared distance -> compute exp on plain -> Encrypt/Return
+        # (Simulating Client/KeyServer interaction for non-linear op)
+        
+        dist_sq_ct = self.l2_norm_sq(ct_a, ct_b)
+        dist_sq = self.decrypt(dist_sq_ct) # Interaction step
+        
+        val = np.exp(-dist_sq / (2 * sigma**2))
+        return self.encrypt([val]) # Return as ciphertext
+
+    def negative_half_power(self, ct):
+        # Computes x^(-1/2) via decryption (hybrid assumption)
+        val = self.decrypt(ct)
+        
+        # Safety
+        if val <= 1e-9: val = 1e-9 # Prevent div by zero
+        
+        res = 1.0 / np.sqrt(val)
+        return self.encrypt([res])
+
+    def exp(self, ct):
+        val = self.decrypt(ct)
+        return self.encrypt([np.exp(val)])
+
+# Default to Mock for now, app.py can switch
+def get_he_context(type="mock"):
+    if type == "mock":
+        return MockHEContext()
+    elif type == "tenseal":
+        return TenSEALContext()
+    else:
+        raise ValueError("Unknown HE type")

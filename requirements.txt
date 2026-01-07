@@ -1,6 +1,9 @@
-numpy
-scipy
-scikit-learn
-pandas
 streamlit
+pandas
+numpy
 matplotlib
+scikit-learn
+tenseal
+plotly
+fpdf
+graphviz
